@@ -1,0 +1,10 @@
+menuconfig DRIVERS_LIGHTS_MOTOR_LEDS
+	bool "motor_leds"
+	default n
+	depends on PLATFORM_NUTTX
+	---help---
+		WS2812B LEDs on the motor arms, one per output of one io_timer, all sent
+		together by one DMA burst on the timer update event (STM32H7, TIM2-TIM5).
+		led_control index n is the arm of motor n, so the board needs
+		CONFIG_BOARD_COMPILE_DEFINITIONS="-DBOARD_MAX_LEDS=5".
+		Start it before pwm_out and dshot (e.g. CONFIG_BOARD_ADDITIONAL_INIT).
