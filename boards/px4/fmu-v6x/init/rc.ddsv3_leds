@@ -1,0 +1,8 @@
+#!/bin/sh
+#
+# px4_fmu-v6x_ddsv3_leds: one WS2812B per motor arm on AUX1-4 (TIM5, DMA1 TIM5_UP).
+# Runs as rc.additional_init, after rc.board_defaults and before px4io, dshot and
+# pwm_out: motor_leds reserves TIM5 here, so AUX1-4 are no longer PWM outputs.
+#------------------------------------------------------------------------------
+
+motor_leds start
