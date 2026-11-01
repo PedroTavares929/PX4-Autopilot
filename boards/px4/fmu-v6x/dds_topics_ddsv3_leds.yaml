@@ -125,10 +125,6 @@ publications:
 
 # Create uORB::Publication
 subscriptions:
-  # px4_fmu-v6x_ddsv3_leds: motor arm LEDs (motor_leds), led_mask bit n = motor n, priority 2
-  - topic: /fmu/in/led_control
-    type: px4_msgs::msg::LedControl
-
   - topic: /fmu/in/register_ext_component_request
     type: px4_msgs::msg::RegisterExtComponentRequest
 
@@ -246,3 +242,10 @@ subscriptions_multi:
     type: px4_msgs::msg::AuxGlobalPosition
     route_field: id
     max_instances: 4
+
+  # px4_fmu-v6x_ddsv3_leds: motor arm LEDs. On its own uORB instance (1), never straight into the
+  # led_control queue of the LED drivers: motor_leds forwards it at priority 2, led_mask bits 1-4 =
+  # motors 1-4 (bit 0, the status LED, ignored), on changes and finite blinks, at most one message
+  # per 100 ms.
+  - topic: /fmu/in/led_control
+    type: px4_msgs::msg::LedControl

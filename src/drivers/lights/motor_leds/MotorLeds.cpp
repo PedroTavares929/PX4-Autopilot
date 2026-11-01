@@ -43,9 +43,17 @@
 #include <px4_arch/io_timer.h>
 #include <px4_platform_common/getopt.h>
 #include <px4_platform_common/log.h>
+#include <systemlib/mavlink_log.h>
 #include <uORB/topics/battery_status.h>
 
 ModuleBase::Descriptor MotorLeds::desc{task_spawn, custom_command, print_usage};
+
+LedController *MotorLeds::_led_controller{nullptr};
+LedControlData MotorLeds::_control{};
+MotorLeds::ArmState MotorLeds::_ros_requested[ARMS] {RELEASED, RELEASED, RELEASED, RELEASED};
+MotorLeds::ArmState MotorLeds::_ros_forwarded[ARMS] {RELEASED, RELEASED, RELEASED, RELEASED};
+
+static_assert(Ws2812TimerBurst::MAX_OUTPUTS == 4, "motor_leds: update the initializers of _ros_requested and _ros_forwarded");
 
 MotorLeds::MotorLeds() :
 	ModuleParams(nullptr),
@@ -66,25 +74,55 @@ void MotorLeds::Run()
 		parameter_update_s parameter_update;
 		_parameter_update_sub.copy(&parameter_update);
 		updateParams();
+		check_output_functions();
 		_publish_all = true;
 		_send_frame = true;
 	}
 
 	if (!_led_control_pub.advertised()) {
 		// A subscription made after a publication only gets the last queued message: advertise first and let
-		// the LedController subscribe, so that it receives every arm state published below.
+		// the LedController subscribe (first start), so that it receives every arm state published below.
 		_led_control_pub.advertise();
-		_led_controller.update(_control);
+		_led_controller->update(_control);
+
+		// Same for ROS 2: a subscriber creates the node of instance 1 (not advertised), which the DDS client then
+		// claims with its first message, so that a burst at its start is not cut down to the last request.
+		const orb_sub_t ros_sub = orb_subscribe_multi(ORB_ID(led_control), ROS_INSTANCE);
+
+		if (orb_sub_valid(ros_sub)) {
+			orb_unsubscribe(ros_sub); // the node stays
+		}
+
+		_ros_led_control_sub[0].subscribe();
 	}
 
 	update_vehicle_state();
 	publish_arm_states(now);
+	forward_ros_override(now);
 
 	// apply what was just published, the commander's state and any priority 2 override
-	_led_controller.update(_control);
+	_led_controller->update(_control);
 	send_frame(now);
 
-	ScheduleDelayed(_led_controller.maximum_update_interval());
+	ScheduleDelayed(_led_controller->maximum_update_interval());
+}
+
+void MotorLeds::check_output_functions()
+{
+	// pwm_out and dshot left these outputs alone at boot: a function set since then is not active before a reboot,
+	// and after it this module does not start. Report each output once: the console alone does not reach QGC.
+	const uint32_t functions = output_functions(_hw.timer());
+	const uint32_t added = functions & ~_functions_reported;
+
+	for (unsigned k = 0; k < ARMS; k++) {
+		if (added & (1u << k)) {
+			// at most 50 characters: one STATUSTEXT
+			mavlink_log_critical(&_mavlink_log_pub, PARAM_PREFIX "_FUNC%u needs reboot, motor LEDs then off",
+					     _hw.first_channel() + k + 1);
+		}
+	}
+
+	_functions_reported = functions;
 }
 
 void MotorLeds::update_vehicle_state()
@@ -128,14 +166,14 @@ void MotorLeds::publish_arm_states(hrt_abstime now)
 
 	for (unsigned k = 0; k < arms; k++) {
 		if (!own_colors || (colors[k] < 0) || (colors[k] > led_control_s::COLOR_WHITE) || (warning && (warn_arms & (1 << k)))) {
-			desired[k] = {led_control_s::COLOR_OFF, led_control_s::MODE_DISABLED}; // the PX4 status shows through
+			desired[k] = RELEASED; // the PX4 status shows through
 
 		} else if (colors[k] == led_control_s::COLOR_OFF) {
-			desired[k] = {led_control_s::COLOR_OFF, led_control_s::MODE_OFF};
+			desired[k] = {led_control_s::COLOR_OFF, led_control_s::MODE_OFF, 0};
 
 		} else {
 			const bool strobe = _armed && (strobe_arms & (1 << k));
-			desired[k] = {(uint8_t)colors[k], strobe ? led_control_s::MODE_FLASH : led_control_s::MODE_ON};
+			desired[k] = {(uint8_t)colors[k], strobe ? led_control_s::MODE_FLASH : led_control_s::MODE_ON, 0}; // 0: forever
 		}
 	}
 
@@ -161,31 +199,79 @@ void MotorLeds::publish_arm_states(hrt_abstime now)
 	_publish_all = false;
 
 	// one message per distinct state (the led_control queue has 8 entries, shared with the commander)
-	for (unsigned k = 0; k < arms; k++) {
-		if (pending & (1u << k)) {
-			unsigned arm_mask = 0;
+	while (pending != 0) {
+		pending &= ~publish_group(desired, _published, pending, PRIORITY);
+	}
+}
 
-			for (unsigned j = k; j < arms; j++) {
-				if ((pending & (1u << j)) && (desired[j] == desired[k])) {
-					arm_mask |= 1u << j;
-					_published[j] = desired[j];
-				}
+void MotorLeds::forward_ros_override(hrt_abstime now)
+{
+	// ROS 2 /fmu/in/led_control is a multi-instance subscription of the DDS client: at its first message it claims the
+	// first instance not advertised, 1 (0 is advertised at boot, 1 created in the first Run). The LED controllers only
+	// read instance 0, so a fast publisher only loses its own messages here: the last request of each arm counts.
+	led_control_s request;
+
+	for (uORB::Subscription &ros_sub : _ros_led_control_sub) {
+		while (ros_sub.update(&request)) {
+			if ((request.color > led_control_s::COLOR_WHITE) || (request.mode > led_control_s::MODE_FLASH)) {
+				continue;
 			}
 
-			pending &= ~arm_mask;
-			publish((uint8_t)(arm_mask << 1), desired[k]); // led_control index = motor number
+			for (unsigned k = 0; k < _hw.outputs(); k++) {
+				if (request.led_mask & (2u << k)) { // bit 0, the status LED, is not forwarded
+					_ros_requested[k] = {request.color, request.mode, request.num_blinks};
+
+					if (request.num_blinks != 0) {
+						_ros_events |= 1u << k; // a finite blink is an event: forwarded again when repeated
+					}
+				}
+			}
+		}
+	}
+
+	// Into the shared queue at priority 2, one message per 100 ms: changes and events only (a repeated endless blink
+	// would restart it)
+	if (now - _last_forward >= FORWARD_INTERVAL) {
+		unsigned pending = _ros_events;
+
+		for (unsigned k = 0; k < _hw.outputs(); k++) {
+			if (_ros_requested[k] != _ros_forwarded[k]) {
+				pending |= 1u << k;
+			}
+		}
+
+		if (pending != 0) {
+			_ros_events &= ~publish_group(_ros_requested, _ros_forwarded, pending, OVERRIDE_PRIORITY);
+			_last_forward = now;
 		}
 	}
 }
 
-void MotorLeds::publish(uint8_t led_mask, const ArmState &state)
+unsigned MotorLeds::publish_group(const ArmState states[], ArmState published[], unsigned pending, uint8_t priority)
+{
+	// one message for the lowest pending arm and every other pending arm in the same state (pending != 0)
+	const unsigned first = __builtin_ctz(pending);
+	unsigned arm_mask = 0;
+
+	for (unsigned k = first; k < ARMS; k++) {
+		if ((pending & (1u << k)) && (states[k] == states[first])) {
+			arm_mask |= 1u << k;
+			published[k] = states[k];
+		}
+	}
+
+	publish((uint8_t)(arm_mask << 1), states[first], priority); // led_control index = motor number
+	return arm_mask;
+}
+
+void MotorLeds::publish(uint8_t led_mask, const ArmState &state, uint8_t priority)
 {
 	led_control_s led_control{};
 	led_control.led_mask = led_mask;
 	led_control.color = state.color;
 	led_control.mode = state.mode;
-	led_control.num_blinks = 0; // flash forever
-	led_control.priority = PRIORITY;
+	led_control.num_blinks = state.num_blinks;
+	led_control.priority = priority;
 	led_control.timestamp = hrt_absolute_time();
 	_led_control_pub.publish(led_control);
 }
@@ -243,8 +329,8 @@ void MotorLeds::stop(hrt_abstime now)
 	}
 
 	if ((_stop_frame_sent && !_hw.busy()) || (now > _stop_deadline)) {
-		// hand the arms back to the PX4 status
-		publish((uint8_t)(((1u << _hw.outputs()) - 1) << 1), ArmState{led_control_s::COLOR_OFF, led_control_s::MODE_DISABLED});
+		// hand the arms back to the PX4 status (a ROS 2 override stays, as in _ros_forwarded)
+		publish((uint8_t)(((1u << _hw.outputs()) - 1) << 1), RELEASED, PRIORITY);
 
 		ScheduleClear();
 		exit_and_cleanup(desc); // deletes this: ~Ws2812TimerBurst() releases the timer, its pins and the DMA stream
@@ -259,30 +345,51 @@ bool MotorLeds::check_output_config(unsigned timer)
 	char name[17];
 	int32_t value = 0;
 
-	// DShot on this timer would reprogram it and take a second DMA stream for the same request: leave it to dshot
+	// timer set to DShot: leave it to dshot
 	snprintf(name, sizeof(name), PARAM_PREFIX "_TIM%u", timer);
-	param_t handle = param_find(name);
+	const param_t handle = param_find(name);
 
 	if ((handle != PARAM_INVALID) && (param_get(handle, &value) == PX4_OK) && (value >= -8) && (value <= -3)) {
 		PX4_ERR("%s=%" PRId32 " (DShot): not starting", name, value);
 		return false;
 	}
 
+	// The actuator configuration wins over the LEDs. With the timer reserved here, pwm_out would leave a function on
+	// these outputs disabled, and dshot (started for another timer) would still reprogram this timer for a motor
+	// function: neither shows in QGC, and the vehicle would arm.
+	const uint32_t functions = output_functions(timer);
+
+	for (unsigned k = 0; k < ARMS; k++) {
+		if (functions & (1u << k)) {
+			PX4_ERR(PARAM_PREFIX "_FUNC%u set: not starting, the output keeps its function",
+				(unsigned)io_timers_channel_mapping.element[timer].first_channel_index + k + 1);
+		}
+	}
+
+	return functions == 0;
+}
+
+uint32_t MotorLeds::output_functions(unsigned timer)
+{
+	uint32_t functions = 0; // bit k: output k of the timer has an actuator function
+
 	if (timer < MAX_IO_TIMERS) {
 		const io_timers_channel_mapping_element_t &mapping = io_timers_channel_mapping.element[timer];
 
-		for (unsigned k = 0; k < mapping.channel_count; k++) {
+		for (unsigned k = 0; (k < mapping.channel_count) && (k < ARMS); k++) {
 			const unsigned output = mapping.first_channel_index + k + 1;
+			char name[17];
+			int32_t value = 0;
 			snprintf(name, sizeof(name), PARAM_PREFIX "_FUNC%u", output);
-			handle = param_find(name);
+			const param_t handle = param_find(name);
 
 			if ((handle != PARAM_INVALID) && (param_get(handle, &value) == PX4_OK) && (value != 0)) {
-				PX4_WARN("%s=%" PRId32 " ignored: output %u drives the LED of motor %u", name, value, output, k + 1);
+				functions |= 1u << k;
 			}
 		}
 	}
 
-	return true;
+	return functions;
 }
 
 int MotorLeds::task_spawn(int argc, char *argv[])
@@ -313,7 +420,11 @@ int MotorLeds::task_spawn(int argc, char *argv[])
 		return PX4_ERROR;
 	}
 
-	MotorLeds *instance = new MotorLeds();
+	if (_led_controller == nullptr) {
+		_led_controller = new LedController();
+	}
+
+	MotorLeds *instance = (_led_controller != nullptr) ? new MotorLeds() : nullptr;
 
 	if (instance == nullptr) {
 		PX4_ERR("alloc failed");
@@ -344,9 +455,10 @@ int MotorLeds::print_status()
 		 _armed, _prearmed, _failsafe, _battery_warning, _preflight_ok, _param_motled_mode.get());
 
 	for (unsigned k = 0; k < _hw.outputs(); k++) {
-		PX4_INFO("motor %u, output %u: %s (color %u, mode %u), rgb %u %u %u", k + 1, _hw.first_channel() + k + 1,
-			 (_published[k].mode == led_control_s::MODE_DISABLED) ? "PX4 status" : "own color",
-			 _published[k].color, _published[k].mode, _sent[k].r, _sent[k].g, _sent[k].b);
+		PX4_INFO("motor %u, output %u: %s (color %u, mode %u), ROS 2 (color %u, mode %u), rgb %u %u %u", k + 1,
+			 _hw.first_channel() + k + 1, (_published[k].mode == led_control_s::MODE_DISABLED) ? "PX4 status" : "own color",
+			 _published[k].color, _published[k].mode, _ros_forwarded[k].color, _ros_forwarded[k].mode,
+			 _sent[k].r, _sent[k].g, _sent[k].b);
 	}
 
 	return 0;
@@ -372,10 +484,12 @@ by a single DMA burst on the timer update event (STM32H7, TIM2-TIM5).
 Output k of the timer is the arm of motor k: led_control index k (index 0 stays the status LED,
 the board needs -DBOARD_MAX_LEDS=5). Each arm shows its own colour (MOTLED_COLx) at priority 1,
 or the PX4 status when configured so (MOTLED_MODE, MOTLED_WARN). led_control at priority 2
-(ROS 2 /fmu/in/led_control, led_control command) overrides it.
+(led_control command) overrides it. ROS 2 /fmu/in/led_control (uORB instance 1) is forwarded
+at priority 2, arms only (bit 0 ignored), on changes and finite blinks, at most one message
+per 100 ms; mode 2 (disabled) releases an arm.
 
-The timer is reserved: start this before pwm_out and dshot (rc.additional_init), and leave the
-functions of its outputs disabled.
+The timer is reserved: start this before pwm_out and dshot (rc.additional_init). It does not
+start while an output of the timer has an actuator function or the timer is set to DShot.
 
 ### Examples
 $ motor_leds start

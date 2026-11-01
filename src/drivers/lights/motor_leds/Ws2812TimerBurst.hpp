@@ -89,6 +89,7 @@ public:
 	int send(const ws2812::Rgb rgb[MAX_OUTPUTS]);
 
 	bool busy() const { return _busy.load(); }
+	unsigned timer() const { return _timer; }
 	unsigned outputs() const { return _outputs; }
 	unsigned first_channel() const { return _first_channel; }
 

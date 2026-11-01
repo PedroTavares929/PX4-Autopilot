@@ -38,8 +38,10 @@
  *
  * led_control index n (1..4) is the arm of motor n; index 0 stays the status LED.
  * The own colour of each arm is published at priority 1. Where an arm shows the PX4 status,
- * priority 1 is disabled and the commander (priority 0) shows through. Priority 2 (ROS 2,
- * led_control command) overrides both.
+ * priority 1 is disabled and the commander (priority 0) shows through. Priority 2 (led_control
+ * command, ROS 2) overrides both. ROS 2 /fmu/in/led_control arrives on its own uORB instance
+ * and is forwarded from there: arms only, on changes, at a bounded rate, so that a fast
+ * publisher cannot push the commander's messages out of the shared led_control queue.
  */
 
 #pragma once
@@ -84,7 +86,10 @@ public:
 
 private:
 	static constexpr unsigned ARMS = Ws2812TimerBurst::MAX_OUTPUTS;
-	static constexpr uint8_t PRIORITY = 1;
+	static constexpr uint8_t PRIORITY = 1;						///< own colours
+	static constexpr uint8_t OVERRIDE_PRIORITY = led_control_s::MAX_PRIORITY;	///< ROS 2 requests
+	static constexpr uint8_t ROS_INSTANCE = 1;					///< see forward_ros_override()
+	static constexpr hrt_abstime FORWARD_INTERVAL = 100_ms;
 
 	static_assert(BOARD_MAX_LEDS >= 1 + (int)ARMS,
 		      "motor_leds: needs CONFIG_BOARD_COMPILE_DEFINITIONS=\"-DBOARD_MAX_LEDS=5\" (0: status LED, 1-4: arms)");
@@ -92,27 +97,52 @@ private:
 	struct ArmState {
 		uint8_t color;
 		uint8_t mode;
+		uint8_t num_blinks;
 
-		bool operator==(const ArmState &other) const { return (color == other.color) && (mode == other.mode); }
+		bool operator==(const ArmState &other) const
+		{
+			return (color == other.color) && (mode == other.mode) && (num_blinks == other.num_blinks);
+		}
+
 		bool operator!=(const ArmState &other) const { return !(*this == other); }
 	};
+
+	static constexpr ArmState RELEASED{led_control_s::COLOR_OFF, led_control_s::MODE_DISABLED, 0};
 
 	void Run() override;
 
 	static bool check_output_config(unsigned timer);
+	static uint32_t output_functions(unsigned timer);
 
+	void check_output_functions();
 	void update_vehicle_state();
 	void publish_arm_states(hrt_abstime now);
-	void publish(uint8_t led_mask, const ArmState &state);
+	void forward_ros_override(hrt_abstime now);
+	unsigned publish_group(const ArmState states[], ArmState published[], unsigned pending, uint8_t priority);
+	void publish(uint8_t led_mask, const ArmState &state, uint8_t priority);
 	void send_frame(hrt_abstime now);
 	void stop(hrt_abstime now);
 
+	// Kept across 'motor_leds stop' + 'start': a new led_control subscription only gets the last message and the
+	// commander publishes its state only on changes, so with a new controller the arms that show it would stay dark.
+	static LedController *_led_controller;	///< allocated by the first start, never freed
+	static LedControlData _control;		///< LedController::update() only fills it on changes
+	static ArmState _ros_requested[ARMS];	///< last ROS 2 request of each arm (RELEASED: none)
+	static ArmState _ros_forwarded[ARMS];	///< ROS 2 state forwarded at priority 2, as the LED controllers have it
+
 	Ws2812TimerBurst _hw;
 
-	LedController _led_controller;
-	LedControlData _control{}; ///< kept between runs: LedController::update() only fills it on changes
-
 	uORB::Publication<led_control_s> _led_control_pub{ORB_ID(led_control)};
+
+	// ROS 2 requests: instance 1, or the next one after a restart of uxrce_dds_client (it leaves a queued topic advertised)
+	uORB::Subscription _ros_led_control_sub[3] {
+		{ORB_ID(led_control), ROS_INSTANCE}, {ORB_ID(led_control), ROS_INSTANCE + 1}, {ORB_ID(led_control), ROS_INSTANCE + 2}
+	};
+	unsigned _ros_events{0};	///< arms with a finite blink request still to forward (bit k: motor k + 1)
+	hrt_abstime _last_forward{0};
+
+	orb_advert_t _mavlink_log_pub{nullptr};
+	uint32_t _functions_reported{0};	///< outputs whose actuator function was reported (bit k: output k)
 
 	uORB::Subscription _actuator_armed_sub{ORB_ID(actuator_armed)};
 	uORB::Subscription _failsafe_flags_sub{ORB_ID(failsafe_flags)};
