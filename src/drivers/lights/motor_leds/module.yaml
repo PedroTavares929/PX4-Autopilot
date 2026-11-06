@@ -1,0 +1,95 @@
+module_name: motor_leds
+
+parameters:
+  - group: Motor LEDs
+    definitions:
+      MOTLED_MODE:
+        description:
+          short: When the motor arm LEDs show their own color
+          long: |
+            Otherwise each arm LED shows the PX4 status, like the status LED.
+            led_control at priority 2 (ROS 2, led_control command) always overrides.
+        type: enum
+        values:
+          0: Never (PX4 status only)
+          1: When armed
+          2: When prearmed or armed
+          3: Always
+        default: 3
+        min: 0
+        max: 3
+      MOTLED_COL${i}:
+        description:
+          short: Color of the LED on the arm of motor ${i}
+          long: |
+            The defaults are aviation position lights on a quadrotor X: motor 1
+            (front right) green, motor 3 (front left) red, rear arms white.
+            PX4 status: this arm always shows the PX4 status, like the status LED.
+        type: enum
+        num_instances: 4
+        instance_start: 1
+        values:
+          -1: PX4 status
+          0: 'Off'
+          1: Red
+          2: Green
+          3: Blue
+          4: Yellow
+          5: Purple
+          6: Amber
+          7: Cyan
+          8: White
+        default: [2, 8, 1, 8]
+        min: -1
+        max: 8
+      MOTLED_WARN:
+        description:
+          short: Arm LEDs that show the PX4 status during a warning
+          long: |
+            Warning: failsafe, battery warning low or worse, or pre-flight checks
+            failing while disarmed. The default (rear arms) keeps the red and green
+            orientation lights at the front.
+        type: bitmask
+        bit:
+          0: Motor 1 arm
+          1: Motor 2 arm
+          2: Motor 3 arm
+          3: Motor 4 arm
+        default: 10
+      MOTLED_STRB:
+        description:
+          short: Arm LEDs that double-flash while armed
+          long: |
+            Anti-collision strobe: two short flashes per second in the arm color
+            instead of a steady light, while armed.
+        type: bitmask
+        bit:
+          0: Motor 1 arm
+          1: Motor 2 arm
+          2: Motor 3 arm
+          3: Motor 4 arm
+        default: 10
+      MOTLED_ORDER:
+        description:
+          short: Colour byte order of the arm LEDs
+          long: |
+            Standard WS2812B LEDs read green, red, blue (GRB). The LEDs of the
+            Holybro X650 arms read red, green, blue (RGB): with GRB their red and
+            green are swapped.
+        type: enum
+        values:
+          0: GRB (standard WS2812B)
+          1: RGB (Holybro X650 arm LEDs)
+        default: 1
+        min: 0
+        max: 1
+      MOTLED_BRT:
+        description:
+          short: Brightness of the motor arm LEDs
+          long: Scales the arm LEDs only, on top of SYS_RGB_MAXBRT.
+        type: float
+        default: 1.0
+        min: 0.0
+        max: 1.0
+        decimal: 2
+        increment: 0.05

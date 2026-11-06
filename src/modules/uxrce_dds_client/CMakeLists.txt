@@ -118,14 +118,21 @@ else()
 	target_include_directories(microxrceddsclient INTERFACE ${microxrceddsclient_build_dir}/include)
 
 
+	# a board variant can provide its own topic list: boards/<vendor>/<model>/dds_topics_<label>.yaml
+	set(DDS_TOPICS_FILE ${CMAKE_CURRENT_SOURCE_DIR}/dds_topics.yaml)
+	if(EXISTS ${PX4_BOARD_DIR}/dds_topics_${PX4_BOARD_LABEL}.yaml)
+		set(DDS_TOPICS_FILE ${PX4_BOARD_DIR}/dds_topics_${PX4_BOARD_LABEL}.yaml)
+		message(STATUS "uxrce_dds_client: topics from ${DDS_TOPICS_FILE}")
+	endif()
+
 	add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/dds_topics.h
 		COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/generate_dds_topics.py
 			--client-outdir ${CMAKE_CURRENT_BINARY_DIR}
-			--dds-topics-file ${CMAKE_CURRENT_SOURCE_DIR}/dds_topics.yaml
+			--dds-topics-file ${DDS_TOPICS_FILE}
 			--template_file ${CMAKE_CURRENT_SOURCE_DIR}/dds_topics.h.em
 		DEPENDS
 			${CMAKE_CURRENT_SOURCE_DIR}/generate_dds_topics.py
-			${CMAKE_CURRENT_SOURCE_DIR}/dds_topics.yaml
+			${DDS_TOPICS_FILE}
 			${CMAKE_CURRENT_SOURCE_DIR}/dds_topics.h.em
 		COMMENT "Generating XRCE-DDS topic bridge"
 	)
