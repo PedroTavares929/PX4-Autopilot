@@ -305,6 +305,14 @@ void MotorLeds::send_frame(hrt_abstime now)
 		}
 	}
 
+	if (_param_motled_order.get() == 1) { // RGB LEDs: the frame sends the green byte first, so swap red and green
+		for (unsigned k = 0; k < _hw.outputs(); k++) {
+			const uint8_t r = rgb[k].r;
+			rgb[k].r = rgb[k].g;
+			rgb[k].g = r;
+		}
+	}
+
 	// also resent once per second, so that a LED upset by noise on its line recovers
 	if (_send_frame || (memcmp(rgb, _sent, sizeof(rgb)) != 0) || (now - _last_frame >= 1_s)) {
 		// on -EBUSY or -EAGAIN this is retried in the next run

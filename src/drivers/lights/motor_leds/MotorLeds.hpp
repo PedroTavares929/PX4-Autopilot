@@ -175,6 +175,7 @@ private:
 		(ParamInt<px4::params::MOTLED_COL4>) _param_motled_col4,
 		(ParamInt<px4::params::MOTLED_WARN>) _param_motled_warn,
 		(ParamInt<px4::params::MOTLED_STRB>) _param_motled_strb,
+		(ParamInt<px4::params::MOTLED_ORDER>) _param_motled_order,
 		(ParamFloat<px4::params::MOTLED_BRT>) _param_motled_brt
 	)
 };

@@ -69,6 +69,20 @@ parameters:
           2: Motor 3 arm
           3: Motor 4 arm
         default: 10
+      MOTLED_ORDER:
+        description:
+          short: Colour byte order of the arm LEDs
+          long: |
+            Standard WS2812B LEDs read green, red, blue (GRB). The LEDs of the
+            Holybro X650 arms read red, green, blue (RGB): with GRB their red and
+            green are swapped.
+        type: enum
+        values:
+          0: GRB (standard WS2812B)
+          1: RGB (Holybro X650 arm LEDs)
+        default: 1
+        min: 0
+        max: 1
       MOTLED_BRT:
         description:
           short: Brightness of the motor arm LEDs
