@@ -316,6 +316,8 @@ Loss of a single GPS when none are required is handled by other GPS health check
 When `COM_GNSSLOSS_ACT` is set to `Warning`, both triggers produce a warning only and never block arming.
 When set to `Warning, block arming`, both triggers block arming and only produce a warning in flight.
 When set to `Return`, `Land`, or `Terminate`, both triggers block arming and fire the configured in-flight failsafe action (subject to the `SYS_HAS_NUM_GNSS` condition above).
+If the failure clears during the [COM_FAIL_ACT_T](#COM_FAIL_ACT_T) Hold, `Return` and `Land` are skipped and the vehicle continues in its previous mode (e.g. the mission resumes).
+Once `Return` or `Land` has started, it continues even if the GNSS failure clears.
 
 | Parameter                                                                                                   | Description                                                                                                                                                                               |
 | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -446,17 +448,19 @@ The reference altitude depends on what the vehicle is commanded to do:
 
 ### Attitude Trigger
 
-The failure detector can be configured to trigger if the vehicle attitude exceeds predefined pitch and roll values for longer than a specified time.
+The failure detector can be configured to trigger if the vehicle tilt deviates from the attitude setpoint by more than a predefined angle, in any direction, for longer than a specified time.
+Without a recent attitude setpoint, for example on rovers, the tilt away from level is checked instead.
+Before arming the attitude setpoint is level, so a vehicle lying on its side or upside down cannot arm.
+The check only runs in modes that control attitude, so it is not active in [Acro mode](../flight_modes_mc/acro.md).
+It is paused for the first 5 seconds after a VTOL switches to multicopter mode without back-transition, i.e. a [quad-chute](#quad-chute-failsafe) or an aborted front transition, while the vehicle recovers from fixed-wing flight.
 
 The relevant parameters are shown below:
 
 | Parameter                                                                                                | Description                                                                                                                      |
 | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | <a id="CBRK_FLIGHTTERM"></a>[CBRK_FLIGHTTERM](../advanced_config/parameter_reference.md#CBRK_FLIGHTTERM) | Flight termination circuit breaker. Unset from 121212 (default) to enable flight termination due to FailureDetector or FMU loss. |
-| <a id="FD_FAIL_P"></a>[FD_FAIL_P](../advanced_config/parameter_reference.md#FD_FAIL_P)                   | Maximum allowed pitch (in degrees).                                                                                              |
-| <a id="FD_FAIL_R"></a>[FD_FAIL_R](../advanced_config/parameter_reference.md#FD_FAIL_R)                   | Maximum allowed roll (in degrees).                                                                                               |
-| <a id="FD_FAIL_P_TTRI"></a>[FD_FAIL_P_TTRI](../advanced_config/parameter_reference.md#FD_FAIL_P_TTRI)    | Time to exceed [FD_FAIL_P](#FD_FAIL_P) for failure detection (default 0.3s).                                                     |
-| <a id="FD_FAIL_R_TTRI"></a>[FD_FAIL_R_TTRI](../advanced_config/parameter_reference.md#FD_FAIL_R_TTRI)    | Time to exceed [FD_FAIL_R](#FD_FAIL_R) for failure detection (default 0.3s).                                                     |
+| <a id="FD_TILT_ERROR"></a>[FD_TILT_ERROR](../advanced_config/parameter_reference.md#FD_TILT_ERROR)       | Maximum allowed tilt error (in degrees).                                                                                         |
+| <a id="FD_TILT_ERROR_T"></a>[FD_TILT_ERROR_T](../advanced_config/parameter_reference.md#FD_TILT_ERROR_T) | Time to exceed [FD_TILT_ERROR](#FD_TILT_ERROR) for failure detection (default 1s).                                               |
 
 ### Motor Failure Trigger
 
