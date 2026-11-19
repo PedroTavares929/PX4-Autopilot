@@ -192,6 +192,7 @@ Please continue reading for [upgrade instructions](#upgrade-guide).
 - [SYS_STATUS](https://mavlink.io/en/messages/common.html#SYS_STATUS) now sets the [MAV_SYS_STATUS_EXTENSION_USED](https://mavlink.io/en/messages/common.html#MAV_SYS_STATUS_EXTENSION_USED) flag in `onboard_control_sensors_present` when extended sensor fields are used.
 - [TIME_ESTIMATE_TO_TARGET](https://mavlink.io/en/messages/common.html#TIME_ESTIMATE_TO_TARGET) reports `safe_return` as `-1` (landed or no estimate) when Return has no time estimate: before Home is set, on the ground unless Return would follow a mission landing, and with [RTL_TYPE](../advanced_config/parameter_reference.md#RTL_TYPE) = 2 or 4 and a valid mission.
   It used to send `0`, or an undefined value with `RTL_TYPE` 2 and 4.
+- The number of [MAVLink instances](../peripherals/mavlink_peripherals.md#mavlink-instances) can now be set per board, and the [Agam Autopilot v6X-RT](../flight_controller/agam_v6xrt.md) has five (`MAV_0_CONFIG` to `MAV_4_CONFIG`). ([PX4-Autopilot#29573](https://github.com/PX4/PX4-Autopilot/pull/29573))
 
 ### RC
 
@@ -208,6 +209,7 @@ Please continue reading for [upgrade instructions](#upgrade-guide).
 
 - After a [quad-chute](../config/safety.md#quad-chute-failsafe), Mission and VTOL Takeoff mode no longer command forward transitions and continue in multicopter mode. Before, a resumed mission commanded the next transition again, which also cleared the quad-chute, and with [COM_QC_ACT](../advanced_config/parameter_reference.md#COM_QC_ACT) set to Warning a quad-chute during a mission transition left the mission waiting at that item.
 - A [quad-chute](../config/safety.md#quad-chute-failsafe) commanded with `MAV_CMD_DO_VTOL_TRANSITION` (`param2` = 1) now only switches to multicopter mode, as it is not caused by a failure. It no longer executes [COM_QC_ACT](../advanced_config/parameter_reference.md#COM_QC_ACT) or requires a reboot before the next arming.
+- Standard VTOLs using pusher assist ([VT_FWD_THRUST_EN](../advanced_config/parameter_reference.md#VT_FWD_THRUST_EN)) now detect a pusher failure in multicopter mode, when the forward velocity stays well below its setpoint although the pusher assist throttle is above [VT_EF_THROT](../advanced_config/parameter_reference.md#VT_EF_THROT). A detected failure is handled as a [quad-chute](../config/safety.md#quad-chute-failsafe) that blocks front transitions until reboot. Setting [VT_EF_TIME](../advanced_config/parameter_reference.md#VT_EF_TIME) to 0 disables the detection and, in flight, allows front transitions again.
 
 ### Fixed-wing
 
